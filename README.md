@@ -9,14 +9,15 @@
 1. [System Overview](#1-system-overview)
 2. [High-Level Architecture](#2-high-level-architecture)
 3. [Architecture Layers](#3-architecture-layers)
-4. [End-to-End Data Flow](#4-end-to-end-data-flow)
-5. [Technology Stack](#5-technology-stack)
-6. [Design Decisions and Tradeoffs](#6-design-decisions-and-tradeoffs)
-7. [Security](#7-security)
-8. [Scalability](#8-scalability)
-9. [Known Limitations](#9-known-limitations)
-10. [Future Roadmap](#10-future-roadmap)
-11. [Mermaid Diagrams](#11-mermaid-diagrams)
+4. [Memory Layer](#4-memory-layer)
+5. [End-to-End Data Flow](#5-end-to-end-data-flow)
+6. [Technology Stack](#6-technology-stack)
+7. [Design Decisions and Tradeoffs](#7-design-decisions-and-tradeoffs)
+8. [Security](#8-security)
+9. [Scalability](#9-scalability)
+10. [Known Limitations](#10-known-limitations)
+11. [Future Roadmap](#11-future-roadmap)
+12. [Mermaid Diagrams](#12-mermaid-diagrams)
 
 ---
 
@@ -47,12 +48,14 @@ CIRecon is installed once in a repository by adding a workflow file that calls t
 
 1. A push or PR event modifies a file under `.github/workflows/`
 2. GitHub spins up a runner and executes the CIRecon action
-3. CIRecon reads all workflow files in the repository
-4. The rule engine runs deterministic checks and categorizes every issue by fixability
-5. All deterministically fixable issues are patched immediately
-6. Any remaining issues are passed to the agent loop, which uses Claude's tool-calling API to reason about repairs iteratively
-7. All patches are validated before being committed
-8. A new branch is created, fixes are committed, and a PR is opened with a full audit trail
+3. CIRecon loads repo-scoped memory from `.github/cirecon/memory.json` (if it exists)
+4. CIRecon reads all workflow files in the repository
+5. The rule engine runs deterministic checks and categorizes every issue by fixability
+6. Memory is consulted — previously rejected fixes are skipped, recurring patterns are flagged
+7. All deterministically fixable issues are patched immediately
+8. Any remaining issues are passed to the agent loop, which uses Claude's tool-calling API to reason about repairs iteratively
+9. All patches are validated before being committed
+10. A new branch is created, fixes are committed, memory is updated, and a PR is opened with a full audit trail
 
 ### Major Architectural Principles
 
@@ -69,6 +72,7 @@ CIRecon is installed once in a repository by adding a workflow file that calls t
 - Transparent: every fix is explained in the PR description
 - Safe: validation gate prevents committing broken YAML
 - Extensible: new rules can be added as Python functions without modifying the agent loop
+- Adaptive: per-repo memory means CIRecon gets more accurate over time, not just on first run
 
 ### Non-Goals
 
@@ -88,6 +92,7 @@ CIRecon is structured as a layered pipeline. Each layer has a single responsibil
 ┌─────────────────────────────────────────────────────────────────┐
 │                     GitHub Repository                           │
 │  Push / PR Event → .github/workflows/*.yml modified             │
+│  Memory → .github/cirecon/memory.json                          │
 └───────────────────────────┬─────────────────────────────────────┘
                             │ triggers
                             ▼
@@ -98,6 +103,13 @@ CIRecon is structured as a layered pipeline. Each layer has a single responsibil
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────────────┐
+│                      Memory Layer                               │
+│  Load .github/cirecon/memory.json (repo-scoped)                │
+│  Past fixes, rejected PRs, recurring patterns, known secrets    │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │ MemoryContext object
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
 │                       Input Layer                               │
 │  Reads workflow files, CI logs, repo metadata, schema           │
 └───────────────────────────┬─────────────────────────────────────┘
@@ -106,6 +118,7 @@ CIRecon is structured as a layered pipeline. Each layer has a single responsibil
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Rule Engine                                │
 │  16+ deterministic checks → structured Issue list               │
+│  Consults MemoryContext → skip rejected fixes                   │
 │  auto_fixable: true → immediate patch                           │
 │  auto_fixable: false → passed to agent loop                     │
 └────────────┬──────────────────────────┬────────────────────────┘
@@ -115,6 +128,7 @@ CIRecon is structured as a layered pipeline. Each layer has a single responsibil
 │  Fix Applier       │     │          Agent Loop                │
 │  (deterministic)   │     │  Orchestrator + Claude API         │
 └────────┬───────────┘     │  Tool-calling, state tracking      │
+         │                 │  MemoryContext informs decisions    │
          │                 │  Max iterations, stopping cond.    │
          │                 └──────────────┬─────────────────────┘
          │                                │ proposed patches
@@ -143,6 +157,14 @@ CIRecon is structured as a layered pipeline. Each layer has a single responsibil
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Output Layer                                 │
 │  Create branch → commit files → open PR with structured body    │
+└───────────────────────┬─────────────────────────────────────────┘
+                        │ run complete
+                        ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                  Memory Update                                  │
+│  Append run results to memory.json                              │
+│  Update known_patterns, pr_status, recurring issues             │
+│  Commit memory.json to repo                                     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -616,7 +638,202 @@ All applied fixes passed YAML syntax validation, schema validation, and rule-eng
 
 ---
 
-## 4. End-to-End Data Flow
+## 4. Memory Layer
+
+### Overview
+
+CIRecon maintains a persistent, repo-scoped memory store at `.github/cirecon/memory.json`. Every repo that installs CIRecon gets its own completely isolated memory file. When CIRecon runs on repo X, it reads only repo X's memory. When it runs on repo Y, it reads only repo Y's memory. There is no cross-repo contamination.
+
+This makes CIRecon adaptive — it gets more accurate the longer it runs on a repo, because it builds up a history of what was fixed, what was rejected, and what keeps recurring.
+
+### Memory Isolation Model
+
+```
+repo-x/
+└── .github/
+    └── cirecon/
+        └── memory.json   ← knows only about repo-x
+
+repo-y/
+└── .github/
+    └── cirecon/
+        └── memory.json   ← knows only about repo-y
+
+repo-z/
+└── .github/
+    └── cirecon/
+        └── memory.json   ← knows only about repo-z
+```
+
+Each memory file is version-controlled inside its own repo. You can inspect its full history with `git log`, see exactly when CIRecon first ran, and roll it back if needed.
+
+### Memory Schema
+
+```json
+{
+  "repo": "arpita-rathwa/repo-x",
+  "created_at": "2025-01-15T10:00:00Z",
+  "last_run": "2025-07-01T14:32:00Z",
+  "total_runs": 12,
+  "runs": [
+    {
+      "run_id": "abc123",
+      "timestamp": "2025-07-01T14:32:00Z",
+      "trigger": "push",
+      "branch": "main",
+      "files_scanned": ["deploy.yml", "test.yml"],
+      "issues_found": [
+        {
+          "id": "RULE_DEPRECATED_ACTION",
+          "file": "deploy.yml",
+          "line": 12,
+          "detail": "actions/checkout@v2"
+        }
+      ],
+      "issues_fixed": [
+        {
+          "id": "RULE_DEPRECATED_ACTION",
+          "file": "deploy.yml",
+          "fix_applied": "bumped to actions/checkout@v4",
+          "method": "rule_engine",
+          "pr": "https://github.com/.../pull/42"
+        }
+      ],
+      "unresolved": [],
+      "pr_url": "https://github.com/.../pull/42",
+      "pr_status": "merged"
+    }
+  ],
+  "known_patterns": {
+    "deploy.yml": {
+      "recurring_issues": ["RULE_DEPRECATED_ACTION"],
+      "last_fixed": "2025-07-01",
+      "fix_accepted": true
+    }
+  },
+  "repo_preferences": {
+    "preferred_runner": "ubuntu-latest",
+    "always_needs_permissions": true,
+    "known_secrets": ["ANTHROPIC_API_KEY", "GITHUB_TOKEN"]
+  },
+  "rejected_fixes": [
+    {
+      "issue_id": "RULE_MISSING_PERMISSIONS_BLOCK",
+      "file": "release.yml",
+      "rejected_at": "2025-06-20",
+      "pr": "https://github.com/.../pull/38",
+      "reason": "PR closed without merge"
+    }
+  ]
+}
+```
+
+### How Memory Is Used During a Run
+
+**Step 1 — Load at startup:**
+```python
+memory = MemoryStore.load(".github/cirecon/memory.json")
+# returns empty MemoryContext if file doesn't exist (first run)
+```
+
+**Step 2 — Inform the rule engine:**
+- If an issue was previously fixed and the PR was merged → apply the same fix immediately with high confidence, no Claude call needed
+- If a fix was previously proposed but the PR was closed/rejected → do not auto-apply it again; flag it for human review instead
+- If an issue has recurred 3+ times without being fixed → escalate its severity
+
+**Step 3 — Inform the agent loop:**
+- Pass `memory.known_patterns` and `memory.repo_preferences` into the agent's context
+- Agent knows which secrets actually exist in this repo (from past `check_secret_exists` calls), reducing redundant API calls
+- Agent knows the repo's preferred runner label, so it doesn't suggest mismatched `runs-on` values
+
+**Step 4 — Update at end of run:**
+```python
+memory.append_run(current_run_result)
+memory.update_patterns(issues_found, issues_fixed)
+memory.update_pr_status(pr_url)  # checks if previous PRs were merged
+memory.save(".github/cirecon/memory.json")
+```
+
+**Step 5 — Commit memory as part of the PR:**
+The updated `memory.json` is included in the same branch and PR as the workflow fixes. This means the memory update is also subject to human review and only takes effect after the PR is merged.
+
+### PR Status Tracking
+
+CIRecon checks the status of previously opened PRs at the start of each run:
+
+```python
+for past_run in memory.runs:
+    if past_run.pr_url:
+        status = github_api.get_pr_status(past_run.pr_url)
+        past_run.pr_status = status  # "open", "merged", "closed"
+```
+
+This is how CIRecon learns whether its fixes were accepted:
+- `merged` → fix was good, apply same pattern confidently in future
+- `closed` (without merge) → fix was rejected, do not re-suggest automatically
+- `open` → fix is pending review, note it in the current run's PR to avoid duplicate PRs
+
+### First Run Behaviour
+
+On the very first run in a repo, `.github/cirecon/memory.json` does not exist. CIRecon initialises an empty `MemoryContext` and proceeds normally. At the end of the run, it creates `memory.json` for the first time and commits it alongside the fixes.
+
+### Why Store Memory in the Repo (Not Externally)
+
+| Approach | Pros | Cons |
+|---|---|---|
+| In-repo JSON file (chosen) | Zero infrastructure, version-controlled, isolated per repo, human-readable, no expiry, no size limits | One commit per merged fix PR |
+| External database | Centralised, queryable across repos | Requires infrastructure, auth, cost, privacy concerns |
+| GitHub Actions cache | No repo commit needed | Expires after 7 days, not version-controlled, can be evicted |
+| GitHub repo variables | Built-in, no extra file | 48KB size limit, not version-controlled, not human-readable |
+
+In-repo JSON with merge-triggered updates is the only approach that is fully auditable, requires zero configuration, has no expiry, no size limits, and zero external infrastructure — while also producing zero noise commits.
+
+---
+
+### Solving the Commit Noise Problem
+
+The naive approach — committing `memory.json` on every CIRecon scan — pollutes git history with meaningless commits. CIRecon avoids this entirely by only updating memory when a fix PR is merged, not on every run.
+
+```
+push event → CIRecon scans → opens fix PR
+                                    ↓
+                    human reviews + merges PR
+                                    ↓
+         pull_request closed + merged: true event fires
+                                    ↓
+         CIRecon updates memory.json (one commit, meaningful)
+```
+
+This means:
+- Scans that find no issues → zero commits
+- Scans that open a PR but it gets rejected → zero commits
+- Scans whose PR gets merged → exactly one memory commit recording the accepted fix
+
+The memory commit only happens when a human confirmed the fix was correct. This is also the right semantic for learning — CIRecon should only remember fixes that were accepted, not every fix it attempted.
+
+**Implementation:** CIRecon listens to the `pull_request: [closed]` event in addition to `push` and `pull_request: [opened]`. When a PR is closed with `merged: true` and the PR was opened by CIRecon, it triggers a memory update:
+
+```yaml
+on:
+  push:
+    paths:
+      - '.github/workflows/**'
+  pull_request:
+    types: [closed]
+```
+
+```python
+if event == "pull_request" and payload["merged"] == True:
+    if payload["user"]["login"] == "github-actions[bot]":
+        memory.record_merged_fix(payload["pull_request"])
+        memory.save_and_commit()
+```
+
+No `memory-backend` input, no user configuration, no decision to make. It just works.
+
+---
+
+## 5. End-to-End Data Flow
 
 **Control flow** is shown with `→`. **Data flow** is shown with `⇒`.
 
@@ -628,26 +845,39 @@ All applied fixes passed YAML syntax validation, schema validation, and rule-eng
         → action.yml entry point: python -m cirecon.main
         ⇒ inputs loaded: api key, max_iterations, auto_fix, severity_threshold
 
-3.  Input Layer executes
+3.  Memory Layer loads
+        → checks for .github/cirecon/memory.json
+        → if exists: load MemoryContext (past runs, patterns, rejected fixes, known secrets)
+        → if not exists: initialise empty MemoryContext (first run)
+        → check status of previously opened PRs via GitHub API
+        ⇒ MemoryContext object available to all subsequent layers
+
+4.  Input Layer executes
         → reads all .github/workflows/*.yml
         → fetches GitHub Actions schema from SchemaStore (or local cache)
         → retrieves CI failure log from triggering run (if available)
         → fetches list of configured secrets from GitHub API
         ⇒ List[WorkflowFile] produced
 
-4.  Rule Engine executes against each WorkflowFile
+5.  Rule Engine executes against each WorkflowFile
         → 16 rule functions run in parallel per file
+        → consults MemoryContext: skip previously rejected fixes
+        → consults MemoryContext: escalate recurring issues
         ⇒ List[Issue] produced, each with auto_fixable flag
 
-5.  Decision point A: are there any auto_fixable issues?
+6.  Decision point A: was this exact fix merged before?
+        YES → apply same fix immediately with high confidence, skip Claude
+        NO  → proceed normally
+
+7.  Decision point B: are there any auto_fixable issues?
         YES → Fix Applier applies deterministic patches
               → Validation Layer checks each patch
               → valid patches accumulated
         NO  → proceed
 
-6.  Decision point B: are there unresolved issues AND is an API key present?
-        YES → Agent Loop initializes AgentState
-              → Orchestrator builds context from unresolved issues
+8.  Decision point C: are there unresolved issues AND is an API key present?
+        YES → Agent Loop initializes AgentState (includes MemoryContext)
+              → Orchestrator builds context from unresolved issues + memory
               → Claude API called with tool schemas
               → Claude selects a tool and provides arguments
               → Orchestrator executes the tool
@@ -657,13 +887,20 @@ All applied fixes passed YAML syntax validation, schema validation, and rule-eng
               → Loop continues until stopping condition
         NO  → proceed to output
 
-7.  Output Layer executes
+9.  Output Layer executes
         → All validated patches written to files
         → Branch created via GitHub API
         → Files committed to branch
         → PR opened with structured report body
 
-8.  Action exits
+10. Memory Layer updates
+        → append current run results to memory.json
+        → update known_patterns with recurring issues
+        → update repo_preferences from observed behaviour
+        → record rejected fixes if any past PRs were closed without merge
+        → commit updated memory.json to same branch as fixes
+
+11. Action exits
         → exit 0 if auto_fix succeeded or no issues found
         → exit 1 if fail-on-unresolved: true and issues remain
 ```
@@ -685,7 +922,8 @@ All applied fixes passed YAML syntax validation, schema validation, and rule-eng
 | CI for CIRecon itself | GitHub Actions | Dogfoods its own tooling |
 | Workflow schema | SchemaStore `github-workflow.json` | Authoritative, community-maintained, regularly updated |
 | Console output | `rich` | Structured log output in GitHub Actions runner logs |
-| Data validation | `pydantic` | Type-safe state objects and tool return schemas |
+| Data validation | `pydantic` | Type-safe state objects, tool return schemas, memory schema |
+| Memory store | In-repo JSON file | Zero infrastructure, version-controlled, repo-isolated, human-readable, updated only on PR merge |
 
 ---
 
@@ -788,6 +1026,12 @@ A patch that passes YAML syntax validation, schema validation, and rule-engine r
 **Human approval always required before merge:**
 CIRecon opens a PR. It does not merge. Every fix requires a human to review the diff and approve the merge. This is a deliberate design constraint, not a limitation to be removed.
 
+**Memory is only as good as PR feedback:**
+CIRecon learns from whether PRs are merged or closed. If a user closes a PR without merging it, CIRecon cannot distinguish between "fix was wrong" and "fix was correct but I handled it manually." Memory quality degrades in repos where PRs are closed for reasons unrelated to fix quality.
+
+**Memory grows unboundedly:**
+`memory.json` accumulates a record of every merged fix indefinitely. In long-lived repos with many accepted fixes, this file may grow large over time. A pruning strategy (keep last N entries) is planned for v2 but not implemented in v1.
+
 **Agent loop is not deterministic:**
 The rule engine produces the same output for the same input, always. The agent loop does not. Two runs on the same unresolved issue may produce different patches. This is an inherent property of LLM-based systems.
 
@@ -837,11 +1081,12 @@ A read-only dashboard showing CIRecon run history, fix rates, and common issue p
 flowchart LR
     A[GitHub Push / PR Event] --> B[GitHub Actions Runner]
     B --> C[CIRecon Action\nDocker Container]
-    C --> D[Input Layer\nRead workflows\nFetch schema\nFetch logs]
-    D --> E[Rule Engine\nDeterministic checks\n16 rules]
+    C --> MEM[Memory Layer\nLoad memory.json\nPast fixes + patterns]
+    MEM --> D[Input Layer\nRead workflows\nFetch schema\nFetch logs]
+    D --> E[Rule Engine\nDeterministic checks\n16 rules\nConsults memory]
     E --> F{All issues\nauto-fixable?}
     F -- Yes --> G[Fix Applier\nruamel.yaml\nAtomic writes]
-    F -- No --> H[Agent Loop\nOrchestrator\nState tracking]
+    F -- No --> H[Agent Loop\nOrchestrator\nState + MemoryContext]
     H --> I[Claude API\nTool-calling\nclaude-sonnet-4-6]
     I --> J[Tool Layer]
     J --> K[GitHub API\nSecrets\nFile reads]
@@ -851,7 +1096,8 @@ flowchart LR
     L -- Pass --> M[Output Layer\nCreate branch\nCommit\nOpen PR]
     L -- Fail --> N[Discard patch\nMark unresolved]
     N --> H
-    M --> O[Pull Request\nwith audit trail]
+    M --> MEMU[Memory Update\nAppend run results\nCommit memory.json]
+    MEMU --> O[Pull Request\nwith audit trail\n+ updated memory]
 ```
 
 ---
@@ -941,6 +1187,25 @@ sequenceDiagram
     G->>T: PR URL
     T->>O: {pr_url: "https://github.com/..."}
     O->>O: Loop complete
+```
+
+### Memory Lifecycle
+
+```mermaid
+flowchart TD
+    A[push event\nworkflow file modified] --> B[CIRecon scans repo]
+    B --> C{memory.json\nexists?}
+    C -- Yes --> D[Load MemoryContext\npast fixes + patterns]
+    C -- No first run --> E[Initialise empty\nMemoryContext]
+    D & E --> F[Rule engine + agent loop\nconsult MemoryContext]
+    F --> G[Open fix PR\nno memory commit yet]
+    G --> H{Human reviews PR}
+    H -- Merges PR --> I[pull_request closed\nmerged: true event]
+    H -- Closes without merge --> J[No memory update\nfix was rejected]
+    I --> K[CIRecon updates\nmemory.json]
+    K --> L[Commit memory.json\none meaningful commit]
+    L --> M[Memory reflects\nonly accepted fixes]
+    J --> N[Memory unchanged\nfix marked as rejected\nif re-encountered]
 ```
 
 ---
