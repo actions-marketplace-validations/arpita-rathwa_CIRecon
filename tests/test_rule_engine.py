@@ -1,14 +1,13 @@
-import pytest
 from cirecon.rule_engine import (
     check_deprecated_action_versions,
     check_missing_permissions,
     check_broken_needs_dependencies,
-    Severity
+    run_all_checks,
 )
 
 
 def load_fixture(filename: str) -> str:
-    with open(f"tests/fixtures/{filename}", "r") as f:
+    with open(f"tests/fixtures/{filename}", "r", encoding="utf-8") as f:
         return f.read()
 
 
@@ -95,4 +94,14 @@ jobs:
       - run: echo "deploying"
 """
     issues = check_broken_needs_dependencies("clean.yml", content)
-    assert len(issues) == 0   
+    assert len(issues) == 0  
+
+def test_run_all_checks_combines_results():
+    content = load_fixture("deprecated_action.yml")
+    issues = run_all_checks("deprecated_action.yml", content)
+
+    ids = [i.id for i in issues]
+
+    # deprecated_action.yml has outdated actions AND no permissions block
+    assert "RULE_DEPRECATED_ACTION" in ids
+    assert "RULE_MISSING_PERMISSIONS_BLOCK" in ids 

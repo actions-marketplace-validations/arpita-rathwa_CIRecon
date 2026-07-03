@@ -90,46 +90,6 @@ def check_deprecated_action_versions(path: str, content: str) -> list[Issue]:
 
     return issues
 
-def check_broken_needs_dependencies(path: str, content: str) -> list[Issue]:
-    issues = []
-
-    try:
-        parsed = yaml.safe_load(content)
-    except yaml.YAMLError:
-        return issues
-
-    if not parsed or "jobs" not in parsed:
-        return issues
-
-    jobs = parsed.get("jobs")
-    if not isinstance(jobs, dict):
-        return issues
-
-    for job_name, job in jobs.items():
-        if not isinstance(job, dict):
-            continue
-        needs = job.get("needs")
-        if needs is None:
-            continue
-
-        # needs can be a string or a list
-        needed_jobs = [needs] if isinstance(needs, str) else needs
-
-        for needed in needed_jobs:
-            if needed not in jobs:
-                issues.append(Issue(
-                    id="RULE_BROKEN_NEEDS_DEPENDENCY",
-                    severity=Severity.HIGH,
-                    message=f"Job '{job_name}' references non-existent job "
-                            f"'{needed}' in 'needs'.",
-                    location=Location(file=path, line=None, column=None),
-                    auto_fixable=False,
-                    confidence=1.0,
-                    suggested_fix=None
-                ))
-
-    return issues
-
 
 def check_missing_permissions(path: str, content: str) -> list[Issue]:
     issues = []
@@ -201,3 +161,7 @@ def check_broken_needs_dependencies(path: str, content: str) -> list[Issue]:
                 ))
     
     return issues  # no need to check jobs if top-level is missing
+
+def run_all_checks(path, content) -> list[Issue]:
+    result = check_deprecated_action_versions(path, content) + check_broken_needs_dependencies(path, content) + check_missing_permissions(path, content)
+    return result
