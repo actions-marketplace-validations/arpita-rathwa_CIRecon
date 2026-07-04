@@ -1,6 +1,6 @@
 {
   "repo": ".",
-  "total_runs": 4,
+  "total_runs": 6,
   "fixes": [],
   "rejected_fixes": [],
   "known_secrets": []
