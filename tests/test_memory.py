@@ -2,7 +2,16 @@ import json
 import tempfile
 from pathlib import Path
 
-from cirecon.memory import FixRecord, MemoryContext, load_memory, save_memory
+from cirecon.memory import (
+    FixRecord,
+    MemoryContext,
+    load_memory,
+    record_fix,
+    record_rejected_fix,
+    save_memory,
+    update_pr_status,
+    was_fix_rejected,
+)
 
 
 def test_save_and_load_roundtrip():
@@ -51,3 +60,61 @@ def test_save_creates_directory():
         assert mem_file.exists()
         raw = json.loads(mem_file.read_text())
         assert raw["repo"] == "test/repo"
+
+
+def test_record_fix_appends():
+    ctx = MemoryContext(repo="test/repo")
+    fix = FixRecord(
+        issue_id="RULE_001",
+        file="f.yml",
+        fix_applied="bump v2->v4",
+        pr_url="https://github.com/test/repo/pull/1",
+        pr_status="open",
+    )
+    record_fix(ctx, fix)
+    assert len(ctx.fixes) == 1
+    assert ctx.fixes[0].issue_id == "RULE_001"
+
+
+def test_record_rejected_fix_deduplicates():
+    ctx = MemoryContext(repo="test/repo")
+    record_rejected_fix(ctx, "RULE_BAD")
+    record_rejected_fix(ctx, "RULE_BAD")
+    assert ctx.rejected_fixes == ["RULE_BAD"]
+
+
+def test_update_pr_status_to_merged():
+    ctx = MemoryContext(repo="test/repo")
+    fix = FixRecord(
+        issue_id="RULE_001",
+        file="f.yml",
+        fix_applied="bump",
+        pr_url="https://github.com/test/repo/pull/1",
+        pr_status="open",
+    )
+    record_fix(ctx, fix)
+    update_pr_status(ctx, "https://github.com/test/repo/pull/1", "merged")
+    assert ctx.fixes[0].pr_status == "merged"
+    assert "RULE_001" not in ctx.rejected_fixes
+
+
+def test_update_pr_status_to_closed_adds_rejected():
+    ctx = MemoryContext(repo="test/repo")
+    fix = FixRecord(
+        issue_id="RULE_001",
+        file="f.yml",
+        fix_applied="bump",
+        pr_url="https://github.com/test/repo/pull/1",
+        pr_status="open",
+    )
+    record_fix(ctx, fix)
+    update_pr_status(ctx, "https://github.com/test/repo/pull/1", "closed")
+    assert ctx.fixes[0].pr_status == "closed"
+    assert "RULE_001" in ctx.rejected_fixes
+
+
+def test_was_fix_rejected():
+    ctx = MemoryContext(repo="test/repo")
+    record_rejected_fix(ctx, "RULE_BAD")
+    assert was_fix_rejected(ctx, "RULE_BAD") is True
+    assert was_fix_rejected(ctx, "RULE_GOOD") is False

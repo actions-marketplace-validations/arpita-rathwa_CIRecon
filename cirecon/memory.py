@@ -55,3 +55,28 @@ def save_memory(memory: MemoryContext, path: str) -> None:
         "known_secrets": memory.known_secrets,
     }
     mem_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def record_fix(memory: MemoryContext, fix: FixRecord) -> MemoryContext:
+    memory.fixes.append(fix)
+    return memory
+
+
+def record_rejected_fix(memory: MemoryContext, issue_id: str) -> MemoryContext:
+    if issue_id not in memory.rejected_fixes:
+        memory.rejected_fixes.append(issue_id)
+    return memory
+
+
+def update_pr_status(memory: MemoryContext, pr_url: str, status: str) -> MemoryContext:
+    for fix in memory.fixes:
+        if fix.pr_url == pr_url:
+            fix.pr_status = status
+            if status == "closed":
+                record_rejected_fix(memory, fix.issue_id)
+            break
+    return memory
+
+
+def was_fix_rejected(memory: MemoryContext, issue_id: str) -> bool:
+    return issue_id in memory.rejected_fixes
