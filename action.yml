@@ -2,6 +2,10 @@ name: 'CIRecon'
 description: 'Agentic CI/CD workflow repair — detects and auto-fixes GitHub Actions errors'
 author: 'arpita-rathwa'
 
+branding:
+  icon: 'shield'
+  color: 'blue'
+
 inputs:
   anthropic-api-key:
     description: 'Anthropic API key for LLM-based fix fallback'
