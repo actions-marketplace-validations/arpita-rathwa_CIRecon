@@ -112,8 +112,11 @@ def propose_fix(issue_dict: dict, file_section: str, api_key: str) -> ToolResult
 
 def apply_fix_tool(path: str, patch: str) -> ToolResult:
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            original = f.read()
+        from pathlib import Path
+
+        p = Path(path)
+        original = p.read_text(encoding="utf-8")
+        p.write_text(patch, encoding="utf-8")
         return ToolResult(
             success=True,
             data={"path": path, "original": original, "patched": patch},
