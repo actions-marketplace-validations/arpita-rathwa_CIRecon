@@ -1,0 +1,24 @@
+name: 'CIRecon'
+description: 'Agentic CI/CD workflow repair — detects and auto-fixes GitHub Actions errors'
+author: 'arpita-rathwa'
+
+inputs:
+  anthropic-api-key:
+    description: 'Anthropic API key for LLM-based fix fallback'
+    required: false
+  max-iterations:
+    description: 'Maximum agent loop iterations'
+    required: false
+    default: '10'
+  fail-on-unresolved:
+    description: 'Exit with error if issues remain after repair'
+    required: false
+    default: 'false'
+
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
+  env:
+    ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+    MAX_ITERATIONS: ${{ inputs.max-iterations }}
+    FAIL_ON_UNRESOLVED: ${{ inputs.fail-on-unresolved }}
