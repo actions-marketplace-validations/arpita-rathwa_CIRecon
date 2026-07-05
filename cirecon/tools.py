@@ -135,11 +135,21 @@ def create_branch_and_pr(
         subprocess.run(["git", "config", "user.name", "CIRecon"], check=True, capture_output=True)
         subprocess.run(["git", "checkout", "-B", branch_name], check=True, capture_output=True)
 
+        print(f"DEBUG: Files to commit: {[p['path'] for p in patches]}")
+        for patch in patches:
+            print(f"DEBUG: {patch['path']} — {len(patch['content'])} bytes — has jobs: {'jobs:' in patch['content']}")
+
         for patch in patches:
             file_path = patch["path"]
             content = patch["content"]
+            print(f"DEBUG: Writing {file_path} ({len(content)} bytes)")
+            print(f"DEBUG: First 200 chars: {content[:200]}")
+            print(f"DEBUG: Last 200 chars: {content[-200:]}")
+            print(f"DEBUG: Contains 'jobs:': {'jobs:' in content}")
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
+
+        print("DEBUG: Running git add -A")
 
         subprocess.run(["git", "add", "-A"], check=True, capture_output=True)
         subprocess.run(["git", "commit", "-m", "[CIRecon] Auto-fix CI/CD workflow issues"], check=True, capture_output=True)

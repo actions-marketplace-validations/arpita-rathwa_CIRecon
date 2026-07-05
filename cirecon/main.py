@@ -69,28 +69,38 @@ def run():
     issues_fixed: list[dict] = []
     unresolved_dicts: list[dict] = []
 
+    # group issues by file for sequential accumulation
+    file_issues_list: dict[str, list[tuple[Issue, dict]]] = {}
     for issue in all_issues:
         d = _issue_to_dict(issue)
-        if not issue.auto_fixable:
-            unresolved_dicts.append(d)
-            continue
-
         path = issue.location.file
-        content = file_contents.get(path, "")
-        if not content:
-            unresolved_dicts.append(d)
+        if path not in file_issues_list:
+            file_issues_list[path] = []
+        file_issues_list[path].append((issue, d))
+
+    for path, issue_pairs in file_issues_list.items():
+        current_content = file_contents.get(path, "")
+        if not current_content:
+            for issue, d in issue_pairs:
+                unresolved_dicts.append(d)
             continue
 
-        new_content = apply_fix(content, issue)
-        validation = validate_all(path, new_content, file_issues.get(path, [issue]))
-        if validation.passed:
-            patches.append({"path": path, "content": new_content})
-            file_contents[path] = new_content
-            issues_fixed.append(d)
-            print(f"  FIXED: {issue.id} in {path}")
-        else:
-            unresolved_dicts.append(d)
-            print(f"  FAILED: {issue.id} in {path} — {' | '.join(validation.errors)}")
+        for issue, d in issue_pairs:
+            if not issue.auto_fixable:
+                unresolved_dicts.append(d)
+                continue
+
+            new_content = apply_fix(current_content, issue)
+            validation = validate_all(path, new_content, file_issues.get(path, [issue]))
+            if validation.passed:
+                current_content = new_content
+                issues_fixed.append(d)
+                print(f"  FIXED: {issue.id} in {path}")
+            else:
+                unresolved_dicts.append(d)
+                print(f"  FAILED: {issue.id} in {path} — {' | '.join(validation.errors)}")
+
+        patches.append({"path": path, "content": current_content})
 
     if unresolved_dicts and anthropic_api_key:
         print(f"\nRunning agent loop for {len(unresolved_dicts)} unresolved issues...")
@@ -102,9 +112,14 @@ def run():
             repo=repo,
             github_token=github_token,
         )
-        for p in state.patches:
-            if p not in patches:
-                patches.append(p)
+        # merge applied fixes from agent loop (deduplicate by path)
+        for fix in state.applied_fixes:
+            existing = [p for p in patches if p["path"] == fix["path"]]
+            if existing:
+                idx = patches.index(existing[0])
+                patches[idx] = fix
+            else:
+                patches.append(fix)
         for fix in state.issues_fixed:
             if fix not in issues_fixed:
                 issues_fixed.append(fix)
