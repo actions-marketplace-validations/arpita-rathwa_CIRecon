@@ -22,6 +22,18 @@ inputs:
     description: 'Exit with error if issues remain after repair'
     required: false
     default: 'false'
+  mode:
+    description: 'Run mode: scan (default) or dashboard'
+    required: false
+    default: 'scan'
+  repos:
+    description: 'Comma-separated list of repos for dashboard mode'
+    required: false
+    default: ''
+  gist-id:
+    description: 'Optional existing Gist ID to update (dashboard mode)'
+    required: false
+    default: ''
 
 runs:
   using: 'docker'
@@ -31,3 +43,6 @@ runs:
     GITHUB_TOKEN: ${{ inputs.github-token }}
     MAX_ITERATIONS: ${{ inputs.max-iterations }}
     FAIL_ON_UNRESOLVED: ${{ inputs.fail-on-unresolved }}
+    MODE: ${{ inputs.mode }}
+    REPOS: ${{ inputs.repos }}
+    GIST_ID: ${{ inputs.gist-id }}

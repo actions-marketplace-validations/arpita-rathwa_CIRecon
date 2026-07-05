@@ -2,15 +2,16 @@ import os
 import sys
 
 from cirecon.agent_loop import run_agent_loop
+from cirecon.dashboard import generate_dashboard_markdown, publish_to_gist
 from cirecon.fix_applier import apply_fix
 from cirecon.input_layer import discover_workflow_files
 from cirecon.memory import (
     FixRecord,
-    MemoryContext,
     load_memory,
     record_fix,
     save_memory,
 )
+from cirecon.org_scanner import scan_repos
 from cirecon.rule_engine import Issue, run_all_checks
 from cirecon.tools import create_branch_and_pr
 from cirecon.validator import validate_all
@@ -32,7 +33,38 @@ def _issue_to_dict(issue: Issue) -> dict:
     }
 
 
-def run():
+def write_job_summary(
+    files_scanned: list,
+    issues_found: list[Issue],
+    issues_fixed: list[dict],
+    unresolved: list[dict],
+) -> None:
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path:
+        return
+
+    with open(summary_path, "a", encoding="utf-8") as f:
+        f.write("## CIRecon Report\n\n")
+        f.write(f"**Files scanned:** {len(files_scanned)} | ")
+        f.write(f"**Issues found:** {len(issues_found)} | ")
+        f.write(f"**Auto-fixable:** {len(issues_fixed)} | ")
+        f.write(f"**Needs attention:** {len(unresolved)}\n\n")
+
+        if issues_found:
+            f.write("### Issues Found\n\n")
+            f.write("| File | Rule | Severity | Auto-fixable | Suggested Fix |\n")
+            f.write("|---|---|---|---|---|\n")
+            for issue in issues_found:
+                fixable = '✅' if issue.auto_fixable else '❌'
+                fix = f'`{issue.suggested_fix}`' if issue.suggested_fix else 'Manual fix required'
+                f.write(f"| `{issue.location.file}` | `{issue.id}` | "
+                        f"{issue.severity.value.upper()} | {fixable} | {fix} |\n")
+        else:
+            f.write("### ✅ All workflows are clean\n\n")
+            f.write("No issues detected in any workflow file.\n")
+
+
+def run() -> None:
     anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
     github_token = os.getenv("GITHUB_TOKEN", "")
     repo = os.getenv("GITHUB_REPOSITORY", "")
@@ -63,6 +95,7 @@ def run():
 
     if not all_issues:
         print("No issues found — all workflows are clean.")
+        write_job_summary(files, [], [], [])
         sys.exit(0)
 
     patches: list[dict] = []
@@ -124,7 +157,8 @@ def run():
             if fix not in issues_fixed:
                 issues_fixed.append(fix)
         unresolved_dicts = state.unresolved
-        print(f"  Agent loop completed: {len(issues_fixed)} fixed, {len(unresolved_dicts)} unresolved")
+        print(f"  Agent loop completed: {len(issues_fixed)} fixed, "
+              f"{len(unresolved_dicts)} unresolved")
 
     # skip any workflow file that references CIRecon itself
     patches = [
@@ -159,11 +193,49 @@ def run():
     save_memory(memory, repo_path)
 
     if unresolved_dicts and fail_on_unresolved:
+        write_job_summary(files, all_issues, issues_fixed, unresolved_dicts)
         print(f"\n{len(unresolved_dicts)} issue(s) remain unresolved. Failing.")
         sys.exit(1)
+
+    write_job_summary(files, all_issues, issues_fixed, unresolved_dicts)
+    sys.exit(0)
+
+
+def run_dashboard() -> None:
+    github_token = os.getenv("GITHUB_TOKEN", "")
+    repos_str = os.getenv("REPOS", "")
+    gist_id = os.getenv("GIST_ID", "")
+
+    if not github_token:
+        print("GITHUB_TOKEN is required for dashboard mode.")
+        sys.exit(1)
+    if not repos_str:
+        print("REPOS env var is required for dashboard mode (comma-separated).")
+        sys.exit(1)
+
+    repo_list = [r.strip() for r in repos_str.split(",") if r.strip()]
+    print(f"Scanning {len(repo_list)} repos...")
+
+    reports = scan_repos(repo_list, github_token)
+
+    markdown = generate_dashboard_markdown(reports)
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_path:
+        with open(summary_path, "a", encoding="utf-8") as f:
+            f.write(markdown)
+
+    try:
+        gist_url = publish_to_gist(markdown, github_token, gist_id or None)
+        print(f"Dashboard published: {gist_url}")
+    except Exception as e:
+        print(f"Failed to publish gist: {e}", file=sys.stderr)
 
     sys.exit(0)
 
 
 if __name__ == "__main__":
-    run()
+    mode = os.getenv("MODE", "scan")
+    if mode == "dashboard":
+        run_dashboard()
+    else:
+        run()
