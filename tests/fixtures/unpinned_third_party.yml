@@ -1,0 +1,10 @@
+name: Unpinned Actions
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: some-org/some-action@v1
+      - uses: another-org/another-action@v2

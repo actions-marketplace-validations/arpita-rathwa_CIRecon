@@ -1,9 +1,11 @@
+import os
 import sys
+import tempfile
 from unittest.mock import patch, MagicMock
 
 import pytest
 
-from cirecon.main import _issue_to_dict, run
+from cirecon.main import _issue_to_dict, run, write_job_summary
 from cirecon.rule_engine import Issue, Location, Severity
 
 
@@ -99,3 +101,54 @@ def test_no_workflow_files(mock_discover):
     with pytest.raises(SystemExit) as exc:
         run()
     assert exc.value.code == 0
+
+
+def test_write_job_summary_with_issues():
+    with tempfile.TemporaryDirectory() as tmp:
+        summary_path = os.path.join(tmp, "summary.md")
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_path}):
+            files_scanned = [("a.yml", "content"), ("b.yml", "content")]
+            issues_found = [
+                Issue(id="RULE_A", severity=Severity.HIGH, message="Missing permissions",
+                      location=Location(file="a.yml", line=None, column=None),
+                      auto_fixable=True, confidence=1.0, suggested_fix="permissions:\n  contents: read"),
+                Issue(id="RULE_B", severity=Severity.CRITICAL, message="Secret in run",
+                      location=Location(file="b.yml", line=None, column=None),
+                      auto_fixable=False, confidence=0.95, suggested_fix=None),
+            ]
+            issues_fixed = [{"id": "RULE_A", "message": "Fixed"}]
+            unresolved = [{"id": "RULE_B", "message": "Cannot fix"}]
+
+            write_job_summary(files_scanned, issues_found, issues_fixed, unresolved)
+
+            with open(summary_path, encoding="utf-8") as f:
+                content = f.read()
+
+        assert "## CIRecon Report" in content
+        assert "**Files scanned:** 2" in content
+        assert "**Issues found:** 2" in content
+        assert "**Auto-fixable:** 1" in content
+        assert "**Needs attention:** 1" in content
+        assert "RULE_A" in content
+        assert "RULE_B" in content
+        assert "\u2705" in content
+        assert "\u274c" in content
+        assert "Manual fix required" in content
+
+
+def test_write_job_summary_no_issues():
+    with tempfile.TemporaryDirectory() as tmp:
+        summary_path = os.path.join(tmp, "summary.md")
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_path}):
+            write_job_summary([], [], [], [])
+            with open(summary_path, encoding="utf-8") as f:
+                content = f.read()
+
+        assert "\u2705 All workflows are clean" in content
+        assert "No issues detected" in content
+
+
+def test_write_job_summary_no_env_var():
+    with patch.dict(os.environ, {}, clear=True):
+        write_job_summary([], [], [], [])
+    # no crash = pass

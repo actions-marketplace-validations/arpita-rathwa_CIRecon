@@ -3,7 +3,7 @@
 > Agentic CI/CD repair for GitHub Actions — detects broken workflow files, auto-fixes what it can, and opens a PR with the rest.
 
 [![CI](https://github.com/arpita-rathwa/CIRecon/actions/workflows/ci.yml/badge.svg)](https://github.com/arpita-rathwa/CIRecon/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.11-blue)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.11+-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![GitHub Actions](https://img.shields.io/badge/GitHub-Marketplace-orange)](https://github.com/marketplace/actions/cirecon)
 
@@ -19,11 +19,12 @@ A misindented YAML block, a deprecated action version, a `needs:` reference poin
 
 CIRecon runs automatically when you push changes to `.github/workflows/`. It:
 
-1. Scans every workflow file with a deterministic rule engine
+1. Scans every workflow file with a deterministic rule engine (7 rules in v2)
 2. Auto-fixes everything it can confidently repair
 3. Uses an agentic Claude-powered loop for issues that need reasoning
 4. Validates every fix before committing — no broken patches ever land
-5. Opens a pull request with a structured summary of what was fixed and what needs your attention
+5. Generates a structured **Job Summary** in the GitHub Actions UI
+6. Opens a pull request with a full audit trail of what was fixed and what needs attention
 
 You review, you merge. CIRecon never touches your main branch directly.
 
@@ -48,7 +49,7 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: arpita-rathwa/CIRecon@v1
+      - uses: arpita-rathwa/CIRecon@v2
         with:
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
@@ -59,13 +60,17 @@ jobs:
 
 ## What CIRecon checks
 
-| Rule | Description | Auto-fixable |
-|---|---|---|
-| `RULE_DEPRECATED_ACTION` | Detects actions pinned to outdated versions (e.g. `checkout@v2` → `@v4`). Skips SHA-pinned actions intentionally. | ✅ Yes |
-| `RULE_MISSING_PERMISSIONS_BLOCK` | Flags workflows with no top-level `permissions:` block. Without it, `GITHUB_TOKEN` has broad default access. | ✅ Yes |
-| `RULE_BROKEN_NEEDS_DEPENDENCY` | Catches jobs with `needs:` entries referencing job IDs that don't exist — a common cause of silent pipeline breakage. | ❌ No — flagged for human review |
+| Rule | Description | Severity | Auto-fixable |
+|---|---|---|---|
+| `RULE_DEPRECATED_ACTION` | Detects actions pinned to outdated versions (e.g. `checkout@v2` → `@v4`). Skips SHA-pinned actions. | Medium | ✅ Yes |
+| `RULE_MISSING_PERMISSIONS_BLOCK` | Flags workflows with no top-level `permissions:` block. Without it, `GITHUB_TOKEN` has broad default access. | Medium | ✅ Yes |
+| `RULE_BROKEN_NEEDS_DEPENDENCY` | Catches jobs with `needs:` referencing non-existent job IDs. | Medium | ❌ — flagged for review |
+| `RULE_SECRET_IN_RUN_COMMAND` | Detects `${{ secrets.* }}` embedded in `run:` shell commands (leaks in logs). | Critical | ❌ — flagged for review |
+| `RULE_PULL_REQUEST_TARGET_UNSAFE` | Flags `pull_request_target` + `actions/checkout` with the attacker-controlled PR ref. | Critical | ❌ — flagged for review |
+| `RULE_OVERLY_BROAD_PERMISSIONS` | Detects `write-all` or ≥3 write-level permissions at top-level or job-level. | High | ❌ — flagged for review |
+| `RULE_UNPINNED_THIRD_PARTY_ACTION` | Flags third-party actions not pinned to a full 40-char commit SHA. | High | ❌ — flagged for review |
 
-More rules coming in v2 — see [CONTRIBUTING.md](CONTRIBUTING.md) to add your own.
+More rules welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) to add your own.
 
 ---
 
@@ -81,6 +86,8 @@ push event
 
 CIRecon is designed **deterministic-first** — the rule engine runs before any LLM call. Claude is only invoked for issues that static analysis can't resolve with confidence. This keeps costs low and behaviour predictable.
 
+At the end of every run, CIRecon writes a **Job Summary** (`$GITHUB_STEP_SUMMARY`) with a table of all issues found, fixed, and unresolved — visible directly in the GitHub Actions UI.
+
 Per-repo memory at `.github/cirecon/memory.json` means CIRecon learns from past runs — it won't re-suggest fixes that were previously rejected, and it recognises recurring patterns over time.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full system design.
@@ -89,11 +96,26 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full system design.
 
 ## Configuration
 
+### Scan mode (default)
+
 | Input | Description | Default |
 |---|---|---|
 | `anthropic-api-key` | Anthropic API key — enables Claude-powered fallback for issues the rule engine can't fix | _(optional)_ |
+| `github-token` | GitHub token with `contents: write` and `pull-requests: write` | _(required)_ |
 | `max-iterations` | Maximum agent loop iterations per run | `10` |
-| `fail-on-unresolved` | Exit with code 1 if any issues remain unresolved after repair | `false` |
+| `fail-on-unresolved` | Exit with error if issues remain unresolved | `false` |
+
+### Dashboard mode
+
+Set `mode: dashboard` and provide a comma-separated list of repos to scan:
+
+| Input | Description | Default |
+|---|---|---|
+| `mode` | Set to `dashboard` to scan multiple repos | `scan` |
+| `repos` | Comma-separated list of `owner/repo` to scan | _(required in dashboard mode)_ |
+| `gist-id` | Existing Gist ID to update (omit to create a new Gist) | _(optional)_ |
+
+Dashboard mode clones each repo (shallow, depth=1), runs all 7 rules, computes a health score per repo, and publishes a markdown dashboard to a **GitHub Gist** (also appended to the Job Summary).
 
 ---
 
@@ -127,12 +149,14 @@ release.yml | RULE_BROKEN_NEEDS_DEPENDENCY | Job 'deploy' needs 'build'
 `actionlint` is a great static linter — CIRecon respects it. The difference:
 
 | | actionlint | CIRecon |
-|---|---|---|
+|---|---|---|---|
 | Detects issues | ✅ | ✅ |
 | Auto-fixes issues | ❌ | ✅ |
 | Opens a PR with fixes | ❌ | ✅ |
 | LLM fallback for complex issues | ❌ | ✅ |
 | Per-repo memory | ❌ | ✅ |
+| Job Summary in Actions UI | ❌ | ✅ |
+| Org-wide dashboard (Gist) | ❌ | ✅ |
 | Free to use | ✅ | ✅ |
 
 ---
