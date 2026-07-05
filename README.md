@@ -104,6 +104,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full system design.
 | `github-token` | GitHub token with `contents: write` and `pull-requests: write` | _(required)_ |
 | `max-iterations` | Maximum agent loop iterations per run | `10` |
 | `fail-on-unresolved` | Exit with error if issues remain unresolved | `false` |
+| `claude-model` | Claude model for LLM fallback (e.g. `claude-sonnet-4-20250514`) | `claude-haiku-4-5-20251001` |
 
 ### Dashboard mode
 

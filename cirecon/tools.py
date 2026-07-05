@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import time
 from dataclasses import dataclass
@@ -75,7 +76,7 @@ def check_secret_exists(secret_name: str, github_token: str, repo: str) -> ToolR
         return ToolResult(success=False, data={}, error=str(e))
 
 
-CLAUDE_MODEL = "claude-haiku-4-5-20251001"
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
 
 def propose_fix(issue_dict: dict, file_section: str, api_key: str) -> ToolResult:
