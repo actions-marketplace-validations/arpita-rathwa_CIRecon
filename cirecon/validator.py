@@ -55,12 +55,12 @@ def validate_schema(content: str) -> ValidationResult:
 
 
 def validate_rule_recheck(path: str, content: str, original_issues: list) -> ValidationResult:
-    original_ids = {i.id for i in original_issues}
+    original_keys = {(i.id, i.location.file) for i in original_issues}
     new_issues = run_all_checks(path, content)
-    new_ids = {i.id for i in new_issues}
-    introduced = new_ids - original_ids
+    new_keys = {(i.id, i.location.file) for i in new_issues}
+    introduced = new_keys - original_keys
     if introduced:
-        details = [i.message for i in new_issues if i.id in introduced]
+        details = [i.message for i in new_issues if (i.id, i.location.file) in introduced]
         return ValidationResult(passed=False, errors=details)
     return ValidationResult(passed=True, errors=[])
 

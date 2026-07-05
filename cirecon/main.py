@@ -52,9 +52,11 @@ def run():
 
     all_issues: list[Issue] = []
     file_contents: dict[str, str] = {}
+    file_issues: dict[str, list[Issue]] = {}
     for path, content in files:
         file_contents[path] = content
         issues = run_all_checks(path, content)
+        file_issues[path] = issues
         all_issues.extend(issues)
         for issue in issues:
             print(f"  [{issue.severity.value.upper()}] {issue.id}: {issue.message}")
@@ -80,7 +82,7 @@ def run():
             continue
 
         new_content = apply_fix(content, issue)
-        validation = validate_all(path, new_content, [issue])
+        validation = validate_all(path, new_content, file_issues.get(path, [issue]))
         if validation.passed:
             patches.append({"path": path, "content": new_content})
             file_contents[path] = new_content
