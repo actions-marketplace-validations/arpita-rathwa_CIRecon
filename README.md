@@ -183,7 +183,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full system design.
 | `anthropic-api-key` | Anthropic API key — enables Claude-powered fallback | _(optional)_ |
 | `claude-model` | Claude model to use for LLM fallback | `claude-haiku-4-5-20251001` |
 | `max-iterations` | Maximum agent loop iterations per run | `10` |
-| `fail-on-unresolved` | Exit with error code 1 if issues remain unresolved | `false` |
+| `fail-on-unresolved` | Exit with error if issues remain unresolved | `false` |
+| `claude-model` | Claude model for LLM fallback (e.g. `claude-sonnet-4-20250514`) | `claude-haiku-4-5-20251001` |
 
 ### Dashboard mode
 

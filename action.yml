@@ -34,6 +34,10 @@ inputs:
     description: 'Optional existing Gist ID to update (dashboard mode)'
     required: false
     default: ''
+  claude-model:
+    description: 'Claude model to use for LLM fallback'
+    required: false
+    default: 'claude-haiku-4-5-20251001'
 
 runs:
   using: 'docker'
@@ -46,3 +50,4 @@ runs:
     MODE: ${{ inputs.mode }}
     REPOS: ${{ inputs.repos }}
     GIST_ID: ${{ inputs.gist-id }}
+    CLAUDE_MODEL: ${{ inputs.claude-model }}

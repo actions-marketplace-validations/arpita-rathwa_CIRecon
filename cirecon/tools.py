@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import time
 from dataclasses import dataclass
@@ -75,7 +76,7 @@ def check_secret_exists(secret_name: str, github_token: str, repo: str) -> ToolR
         return ToolResult(success=False, data={}, error=str(e))
 
 
-CLAUDE_MODEL = "claude-haiku-4-5-20251001"
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
 
 def propose_fix(issue_dict: dict, file_section: str, api_key: str) -> ToolResult:
@@ -143,6 +144,10 @@ def create_branch_and_pr(
         branch_name = f"ci-recon/fix-{int(time.time())}"
 
         subprocess.run(
+            ["git", "config", "--global", "safe.directory", "*"],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
             ["git", "config", "user.email", "cirecon@ci-recon.dev"],
             check=True, capture_output=True,
         )
@@ -155,15 +160,21 @@ def create_branch_and_pr(
             check=True, capture_output=True,
         )
 
-        print(f"DEBUG: Files to commit: {[p['path'] for p in patches]}")
         for patch in patches:
+            if not patch['path'].startswith('.github/workflows/'):
+                raise ValueError(f"CIRecon attempted to patch non-workflow file: {patch['path']}")
+
+        workflow_patches = [p for p in patches if p['path'].startswith('.github/workflows/')]
+
+        print(f"DEBUG: Files to commit: {[p['path'] for p in workflow_patches]}")
+        for patch in workflow_patches:
             debug_msg = (
                 f"DEBUG: {patch['path']} — {len(patch['content'])} bytes "
                 f"— has jobs: {'jobs:' in patch['content']}"
             )
             print(debug_msg)
 
-        for patch in patches:
+        for patch in workflow_patches:
             file_path = patch["path"]
             content = patch["content"]
             print(f"DEBUG: Writing {file_path} ({len(content)} bytes)")
@@ -173,9 +184,9 @@ def create_branch_and_pr(
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
 
-        print("DEBUG: Running git add -A")
+        print("DEBUG: Running git add .github/workflows/")
 
-        subprocess.run(["git", "add", "-A"], check=True, capture_output=True)
+        subprocess.run(["git", "add", ".github/workflows/"], check=True, capture_output=True)
         subprocess.run(
             ["git", "commit", "-m", "[CIRecon] Auto-fix CI/CD workflow issues"],
             check=True, capture_output=True,
