@@ -133,12 +133,12 @@ def test_apply_fix_tool_file_not_found():
     assert result.error is not None
 
 
+@patch("cirecon.tools.subprocess.run")
 @patch("cirecon.tools.Github")
-def test_create_branch_and_pr_success(mock_github):
+def test_create_branch_and_pr_success(mock_github, mock_subproc):
+    mock_subproc.return_value.returncode = 0
     mock_repo = mock_github.return_value.get_repo.return_value
     mock_repo.default_branch = "main"
-    mock_branch = mock_repo.get_branch.return_value
-    mock_branch.commit.sha = "abcdef1234"
     mock_pr = mock_repo.create_pull.return_value
     mock_pr.html_url = "https://github.com/test/repo/pull/42"
 
@@ -148,26 +148,35 @@ def test_create_branch_and_pr_success(mock_github):
     issues_fixed = [{"id": "RULE_DEPRECATED_ACTION", "message": "Bumped checkout"}]
     unresolved = []
 
-    result = create_branch_and_pr(
-        patches=patches,
-        issues_fixed=issues_fixed,
-        unresolved=unresolved,
-        github_token="ghp_token",
-        repo="test/repo",
-    )
+    with tempfile.TemporaryDirectory() as tmp:
+        orig_cwd = Path.cwd()
+        try:
+            import os
+            os.chdir(tmp)
+            (Path(tmp) / ".github/workflows").mkdir(parents=True)
+            result = create_branch_and_pr(
+                patches=patches,
+                issues_fixed=issues_fixed,
+                unresolved=unresolved,
+                github_token="ghp_token",
+                repo="test/repo",
+            )
+        finally:
+            os.chdir(orig_cwd)
 
     assert result.success is True
     assert result.data["pr_url"] == "https://github.com/test/repo/pull/42"
 
-    mock_repo.create_git_ref.assert_called_once()
-    ref_arg = mock_repo.create_git_ref.call_args[1]["ref"]
-    assert ref_arg.startswith("refs/heads/ci-recon/fix-")
+    config_calls = [c for c in mock_subproc.call_args_list if c[0][0][:2] == ["git", "config"]]
+    assert len(config_calls) == 2
 
-    kwargs = mock_repo.create_file.call_args[1]
-    assert kwargs["path"] == ".github/workflows/ci.yml"
-    assert kwargs["content"] == "name: CI\n"
-    assert "message" in kwargs
-    assert "branch" in kwargs
+    checkout_call = [c for c in mock_subproc.call_args_list if c[0][0][:2] == ["git", "checkout"]]
+    assert len(checkout_call) == 1
+    assert checkout_call[0][0][0][3].startswith("ci-recon/fix-")
+
+    push_calls = [c for c in mock_subproc.call_args_list if c[0][0][:2] == ["git", "push"]]
+    assert len(push_calls) == 1
+    assert "x-access-token" in push_calls[0][0][0][2]
 
     mock_repo.create_pull.assert_called_once()
     pr_body = mock_repo.create_pull.call_args[1]["body"]
@@ -177,12 +186,12 @@ def test_create_branch_and_pr_success(mock_github):
     assert "None — all issues resolved" in pr_body
 
 
+@patch("cirecon.tools.subprocess.run")
 @patch("cirecon.tools.Github")
-def test_create_branch_and_pr_includes_unresolved_table(mock_github):
+def test_create_branch_and_pr_includes_unresolved_table(mock_github, mock_subproc):
+    mock_subproc.return_value.returncode = 0
     mock_repo = mock_github.return_value.get_repo.return_value
     mock_repo.default_branch = "main"
-    mock_branch = mock_repo.get_branch.return_value
-    mock_branch.commit.sha = "abc"
     mock_pr = mock_repo.create_pull.return_value
     mock_pr.html_url = "https://github.com/test/repo/pull/43"
 
@@ -190,13 +199,20 @@ def test_create_branch_and_pr_includes_unresolved_table(mock_github):
     issues_fixed = [{"id": "RULE_A", "message": "Fixed A"}]
     unresolved = [{"id": "RULE_B", "message": "Could not fix B"}]
 
-    result = create_branch_and_pr(
-        patches=patches,
-        issues_fixed=issues_fixed,
-        unresolved=unresolved,
-        github_token="ghp_token",
-        repo="test/repo",
-    )
+    with tempfile.TemporaryDirectory() as tmp:
+        import os
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(tmp)
+            result = create_branch_and_pr(
+                patches=patches,
+                issues_fixed=issues_fixed,
+                unresolved=unresolved,
+                github_token="ghp_token",
+                repo="test/repo",
+            )
+        finally:
+            os.chdir(orig_cwd)
 
     assert result.success is True
     pr_body = mock_repo.create_pull.call_args[1]["body"]
@@ -208,6 +224,7 @@ def test_create_branch_and_pr_includes_unresolved_table(mock_github):
 @patch("cirecon.tools.subprocess.run")
 @patch("cirecon.tools.Github")
 def test_create_branch_and_pr_api_error(mock_github, mock_subproc):
+    mock_subproc.return_value.returncode = 0
     mock_github.side_effect = Exception("GitHub API error")
 
     result = create_branch_and_pr(
