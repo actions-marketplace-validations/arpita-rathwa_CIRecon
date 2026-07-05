@@ -24,5 +24,6 @@ runs:
   image: 'Dockerfile'
   env:
     ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+    GITHUB_WORKSPACE: ${{ github.workspace }}
     MAX_ITERATIONS: ${{ inputs.max-iterations }}
     FAIL_ON_UNRESOLVED: ${{ inputs.fail-on-unresolved }}

@@ -39,9 +39,11 @@ def run():
     max_iterations = int(os.getenv("MAX_ITERATIONS", "10"))
     fail_on_unresolved = os.getenv("FAIL_ON_UNRESOLVED", "false").lower() == "true"
 
-    memory = load_memory(".")
+    workspace = os.getenv("GITHUB_WORKSPACE", ".")
 
-    files = discover_workflow_files(".")
+    memory = load_memory(workspace)
+
+    files = discover_workflow_files(workspace)
     if not files:
         print("No workflow files found.")
         sys.exit(0)
@@ -129,7 +131,7 @@ def run():
             print(f"Failed to create PR: {result.error}", file=sys.stderr)
 
     memory.total_runs += 1
-    save_memory(memory, ".")
+    save_memory(memory, workspace)
 
     if unresolved_dicts and fail_on_unresolved:
         print(f"\n{len(unresolved_dicts)} issue(s) remain unresolved. Failing.")
