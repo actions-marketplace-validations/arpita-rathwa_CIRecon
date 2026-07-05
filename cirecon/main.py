@@ -39,7 +39,7 @@ def run():
     max_iterations = int(os.getenv("MAX_ITERATIONS", "10"))
     fail_on_unresolved = os.getenv("FAIL_ON_UNRESOLVED", "false").lower() == "true"
 
-    workspace = os.getenv("GITHUB_WORKSPACE", ".")
+    workspace = os.getenv("GITHUB_WORKSPACE") or "."
 
     memory = load_memory(workspace)
 
